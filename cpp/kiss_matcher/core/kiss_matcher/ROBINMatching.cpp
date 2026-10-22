@@ -78,6 +78,8 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
 
   std::vector<std::tuple<int, int, float>> matched_pairs;  // (ji, j, ratio)
 
+  // Phase 1: for each j, find its nearest neighbor(s) in i (embarrassingly parallel,
+  // since each j only ever writes to its own slot of corres_K/dis_j/j_to_i_multi_flann).
   tbb::parallel_for(tbb::blocked_range<size_t>(0, nPtj_), [&](tbb::blocked_range<size_t> r) {
     for (size_t j = r.begin(); j < r.end(); ++j) {
       searchKDTree(feature_tree_i, features_[fj_][j], corres_K[j], dis_j[j], num_candidates);
@@ -86,18 +88,36 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
         continue;
       }
       if (corres_K[j][0] >= 0 && corres_K[j][0] < nPti_) {
-        if (i_to_j_multi_flann[corres_K[j][0]] == -1) {
-          searchKDTree(feature_tree_j,
-                       features_[fi_][corres_K[j][0]],
-                       corres_K2[corres_K[j][0]],
-                       dis_i[corres_K[j][0]],
-                       1);
-          i_to_j_multi_flann[corres_K[j][0]] = corres_K2[corres_K[j][0]][0];
-        }
         j_to_i_multi_flann[j] = corres_K[j][0];
       }
     }
   });
+
+  // Phase 2: for the reverse direction, each candidate i index must be searched exactly
+  // once. Multiple j's above may point to the same i, so we first collect the distinct
+  // i indices (sequentially, to avoid a check-and-set race on `i_to_j_multi_flann`), then
+  // search them in parallel -- each i is now touched by exactly one task.
+  std::vector<int> distinct_i_indices;
+  {
+    std::vector<uint8_t> seen(nPti_, 0);
+    distinct_i_indices.reserve(nPtj_);
+    for (ssize_t j = 0; j < nPtj_; ++j) {
+      int ii = j_to_i_multi_flann[j];
+      if (ii != -1 && !seen[ii]) {
+        seen[ii] = 1;
+        distinct_i_indices.push_back(ii);
+      }
+    }
+  }
+
+  tbb::parallel_for(
+      tbb::blocked_range<size_t>(0, distinct_i_indices.size()), [&](tbb::blocked_range<size_t> r) {
+        for (size_t k = r.begin(); k < r.end(); ++k) {
+          const int ii = distinct_i_indices[k];
+          searchKDTree(feature_tree_j, features_[fi_][ii], corres_K2[ii], dis_i[ii], 1);
+          i_to_j_multi_flann[ii] = corres_K2[ii][0];
+        }
+      });
 
   // Note(hlim): ratio-based filtering was better than distance-based filtering!
   // Success rate in the KITTI 10m benchmark:
