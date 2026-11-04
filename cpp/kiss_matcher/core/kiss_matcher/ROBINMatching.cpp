@@ -101,7 +101,7 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
   {
     std::vector<uint8_t> seen(nPti_, 0);
     distinct_i_indices.reserve(nPtj_);
-    for (ssize_t j = 0; j < nPtj_; ++j) {
+    for (std::ptrdiff_t j = 0; j < nPtj_; ++j) {
       int ii = j_to_i_multi_flann[j];
       if (ii != -1 && !seen[ii]) {
         seen[ii] = 1;
@@ -124,7 +124,7 @@ void ROBINMatching::match(const std::string& robin_mode, float tuple_scale, bool
   // float ratio = dis_j[j][0] / dis_j[j][1]; <- 98.56%
   // float ratio = dis_j[j][0];               <- 97.84%
   matched_pairs.reserve(nPti_);
-  for (ssize_t j = 0; j < nPtj_; j++) {
+  for (std::ptrdiff_t j = 0; j < nPtj_; j++) {
     int ji = j_to_i_multi_flann[j];
     if (ji != -1 && j == i_to_j_multi_flann[ji]) {
       float ratio = use_ratio_test ? dis_j[j][0] / dis_j[j][1] : 0.0;
@@ -310,7 +310,8 @@ void ROBINMatching::applyOutlierPruning(const std::vector<std::pair<int, int>>& 
     Eigen::Matrix<double, 3, Eigen::Dynamic> tgt_robin(3, ncorr);
 
 #pragma omp parallel for
-    for (size_t i = 0; i < ncorr; ++i) {
+    for (long long i_ = 0; i_ < static_cast<long long>(ncorr); i_++) {
+      const size_t i = static_cast<size_t>(i_);
       src_robin.col(i) = pointcloud_[fi_][corres[i].first].cast<double>();
       tgt_robin.col(i) = pointcloud_[fj_][corres[i].second].cast<double>();
     }
@@ -361,7 +362,8 @@ std::vector<size_t> ROBINMatching::applyOutlierPruning(
 
   num_init_corr_ = src_matched.size();
 #pragma omp parallel for
-  for (size_t i = 0; i < num_init_corr_; ++i) {
+  for (long long i_ = 0; i_ < static_cast<long long>(num_init_corr_); i_++) {
+    const size_t i = static_cast<size_t>(i_);
     src_robin.col(i) = src_matched[i].cast<double>();
     tgt_robin.col(i) = tgt_matched[i].cast<double>();
   }

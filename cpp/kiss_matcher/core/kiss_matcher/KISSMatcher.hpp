@@ -293,8 +293,8 @@ class KISSMatcher {
   // I(ewak) guessed and gave it a try and address sanitiser builds run clean, YMMV.
   // add_compile_options(-fsanitize=address -fsanitize-recover=address)
   // add_link_options(-fsanitize=address -fsanitize-recover=address)
-  std::vector<Eigen::VectorXf> __attribute__((aligned(EIGEN_MAX_ALIGN_BYTES))) src_descriptors_;
-  std::vector<Eigen::VectorXf> __attribute__((aligned(EIGEN_MAX_ALIGN_BYTES))) tgt_descriptors_;
+  alignas(EIGEN_MAX_ALIGN_BYTES) std::vector<Eigen::VectorXf> src_descriptors_;
+  alignas(EIGEN_MAX_ALIGN_BYTES) std::vector<Eigen::VectorXf> tgt_descriptors_;
 
   std::vector<std::pair<int, int>> corr_;
 

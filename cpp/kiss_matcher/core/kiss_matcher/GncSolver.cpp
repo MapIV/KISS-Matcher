@@ -173,7 +173,8 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
                                                   s,                         \
                                                   ranges,                    \
                                                   inner_loop_f)
-  for (size_t ih = 0; ih < ih_bound; ih += s) {
+  for (long long ih_ = 0; ih_ < static_cast<long long>(ih_bound); ih_ += s) {
+    const size_t ih = static_cast<size_t>(ih_);
     for (size_t jh = 0; jh < jh_bound; jh += s) {
       for (size_t il = 0; il < static_cast<size_t>(s); ++il) {
         size_t i = ih + il;
@@ -200,7 +201,8 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
                                                   ranges,                    \
                                                   nr_centers,                \
                                                   inner_loop_f)
-  for (size_t i = 0; i < nr_centers; ++i) {
+  for (long long i_ = 0; i_ < static_cast<long long>(nr_centers); i_++) {
+    const size_t i = static_cast<size_t>(i_);
     inner_loop_f(i, 0, jh_bound, N);
   }
 
@@ -221,7 +223,9 @@ void ScalarTLSEstimator::estimate_tiled(const Eigen::RowVectorXd& X,
                                                   ranges,                    \
                                                   nr_centers,                \
                                                   inner_loop_f)
-  for (size_t i = ih_bound; i < nr_centers; ++i) {
+  for (long long i_ = static_cast<long long>(ih_bound); i_ < static_cast<long long>(nr_centers);
+       i_++) {
+    const size_t i = static_cast<size_t>(i_);
     inner_loop_f(i, 0, 0, N);
   }
 
@@ -402,7 +406,8 @@ Eigen::Matrix<double, 3, Eigen::Dynamic> RobustRegistrationSolver::computeTIMs(
   map->resize(2, N * (N - 1) / 2);
 
 #pragma omp parallel for default(none) shared(N, v, vtilde, map)
-  for (size_t i = 0; i < N - 1; i++) {
+  for (long long i_ = 0; i_ < static_cast<long long>(N - 1); i_++) {
+    const size_t i = static_cast<size_t>(i_);
     // Calculate some important indices
     // For each measurement, we compute the TIMs between itself and all the measurements after it.
     // For example:
