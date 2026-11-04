@@ -164,8 +164,13 @@ struct FasterPFH {
   std::vector<Eigen::Vector3f> normals_;
   std::vector<Correspondences> corrs_fpfh_;
   std::vector<Eigen::Vector3i> voxel_indices_;
-  std::vector<bool> is_valid_;
-  std::vector<bool> is_visited_;
+  // NOTE: `std::vector<bool>` is bit-packed, so writes to different indices can share
+  // the same underlying byte/word. `is_valid_` is written concurrently from multiple
+  // threads in `FasterPFH::ComputeFeature`'s parallel_reduce (one write per point index),
+  // which is a data race under `std::vector<bool>`'s packed representation. `uint8_t`
+  // gives each element its own byte, making the per-index writes independent.
+  std::vector<uint8_t> is_valid_;
+  std::vector<uint8_t> is_visited_;
 
   std::vector<uint32_t> spfh_indices_;  // voxels whose normals are valid
                                         //    tsl::robin_set<uint32_t> redundant_indices_;

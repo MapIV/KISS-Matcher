@@ -112,11 +112,19 @@ void FasterPFH::setInputCloud(const std::vector<Eigen::Vector3f> &points) {
 
   points_     = points;
   num_points_ = static_cast<int>(points.size());
-  normals_.resize(num_points_, UNASSIGNED_NORMAL);
-  corrs_fpfh_.resize(num_points_);
-  num_valid_voxels_.resize(num_points_, 0);
-  is_valid_.resize(num_points_, false);
-  is_visited_.resize(num_points_, false);
+  // NOTE: `resize(n, value)` only value-initializes *newly added* elements; any element that
+  // already existed keeps its previous content. Since a `FasterPFH` instance is reused across
+  // calls (both for src-then-tgt within one `match()`, and across successive `match()` calls on
+  // the same `KISSMatcher`), `resize` left `is_valid_`/`is_visited_`/`normals_` holding values
+  // computed from the *previous* cloud. `ComputeFeature` only overwrites `is_valid_[i]` when
+  // point `i` has more than 2 neighbors, so sparse points kept a stale `true` and were emitted
+  // as keypoints with a stale normal -- making the output depend on the call history rather than
+  // on the input alone. `assign` overwrites every element, so each call starts from a clean state.
+  normals_.assign(num_points_, UNASSIGNED_NORMAL);
+  corrs_fpfh_.assign(num_points_, Correspondences());
+  num_valid_voxels_.assign(num_points_, 0);
+  is_valid_.assign(num_points_, 0);
+  is_visited_.assign(num_points_, 0);
 }
 
 // https://github.com/PointCloudLibrary/pcl/blob/master/features/include/pcl/features/impl/fpfh.hpp#L270
@@ -138,14 +146,21 @@ void FasterPFH::ComputeFeature(std::vector<Eigen::Vector3f> &points,
   MyKdTree kdtree(cloud_nano);
 
   // auto t_s_n    = std::chrono::high_resolution_clock::now();
-  spfh_indices_ = tbb::parallel_reduce(
+  // NOTE: Each chunk's results are tagged with the block's starting index so that,
+  // regardless of how TBB splits/schedules the ranges, the chunks can be sorted back
+  // into ascending order below. This keeps `spfh_indices_` deterministic across runs
+  // while still allowing the per-point work to run in parallel.
+  using IndexChunk = std::pair<uint32_t, std::vector<uint32_t> >;
+  std::vector<IndexChunk> empty_chunks;
+  std::vector<IndexChunk> chunks = tbb::parallel_reduce(
       // Range
       tbb::blocked_range<uint32_t>(0, num_points_),
       // Identity
-      empty_vector,
+      empty_chunks,
       // 1st lambda: Parallel computation
       [&](const tbb::blocked_range<uint32_t> &r,
-          std::vector<uint32_t> local_indices) -> std::vector<uint32_t> {
+          std::vector<IndexChunk> local_chunks) -> std::vector<IndexChunk> {
+        std::vector<uint32_t> local_indices;
         local_indices.reserve(r.size());
         for (uint32_t i = r.begin(); i != r.end(); ++i) {
           if (criteria_ == "L2") {
@@ -174,15 +189,28 @@ void FasterPFH::ComputeFeature(std::vector<Eigen::Vector3f> &points,
             local_indices.push_back(i);
           }
         }
-        return local_indices;
+        local_chunks.emplace_back(r.begin(), std::move(local_indices));
+        return local_chunks;
       },
       // 2nd lambda: Parallel reduction
-      [](std::vector<uint32_t> a, const std::vector<uint32_t> &b) -> std::vector<uint32_t> {
+      [](std::vector<IndexChunk> a, std::vector<IndexChunk> b) -> std::vector<IndexChunk> {
         a.insert(a.end(),  //
                  std::make_move_iterator(b.begin()),
                  std::make_move_iterator(b.end()));
         return a;
       });
+
+  std::sort(chunks.begin(), chunks.end(), [](const IndexChunk &a, const IndexChunk &b) {
+    return a.first < b.first;
+  });
+
+  spfh_indices_ = std::move(empty_vector);
+  spfh_indices_.reserve(num_points_);
+  for (auto &chunk : chunks) {
+    spfh_indices_.insert(spfh_indices_.end(),
+                          std::make_move_iterator(chunk.second.begin()),
+                          std::make_move_iterator(chunk.second.end()));
+  }
 
   // Important!
   // Without this function, the final descriptors have NaN values
