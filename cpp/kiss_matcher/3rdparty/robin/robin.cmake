@@ -28,7 +28,7 @@ include(FetchContent)
 FetchContent_Declare(
   robin
   GIT_REPOSITORY https://github.com/MapIV/ROBIN.git
-  GIT_TAG        fix/building_win_env
+  GIT_TAG        main
 )
 FetchContent_GetProperties(robin)
 
