@@ -1,6 +1,6 @@
 #pragma once
 
-#include <atomic>
+#include <algorithm>
 #include <iostream>
 #include <memory>
 
@@ -15,10 +15,41 @@
 
 namespace kiss_matcher {
 
+// Finds the start index of every run of equal keys in a sorted array, e.g. for
+// keys = [A, A, B, B, B, C], returns [0, 2, 5] (plus `keys.size()` as an implicit
+// end sentinel). Each run corresponds to exactly one output voxel, so partitioning
+// work by run (rather than by a fixed block size) guarantees that no voxel is ever
+// split across two parallel tasks, and that iterating runs in order reproduces a
+// deterministic output order regardless of TBB scheduling.
+template <typename KeyFn>
+std::vector<size_t> FindRunStarts(size_t num_elements, KeyFn &&key_of) {
+  std::vector<size_t> run_starts;
+  if (num_elements == 0) {
+    return run_starts;
+  }
+
+  std::vector<uint8_t> is_run_start(num_elements, 0);
+  is_run_start[0] = 1;
+  tbb::parallel_for(tbb::blocked_range<size_t>(1, num_elements, 4096),
+                    [&](const tbb::blocked_range<size_t> &range) {
+                      for (size_t i = range.begin(); i != range.end(); i++) {
+                        if (key_of(i - 1) != key_of(i)) {
+                          is_run_start[i] = 1;
+                        }
+                      }
+                    });
+
+  run_starts.reserve(num_elements);
+  for (size_t i = 0; i < num_elements; i++) {
+    if (is_run_start[i]) {
+      run_starts.push_back(i);
+    }
+  }
+  return run_starts;
+}
+
 /**
  * @brief Voxel grid downsampling with TBB backend.
- * @note  This function has minor run-by-run non-deterministic behavior due to parallel data
- * collection.
  * @param points     Input points
  * @param leaf_size  Downsampling resolution
  * @return           Downsampled points
@@ -61,38 +92,40 @@ std::shared_ptr<OutputPointCloud> VoxelgridSampling(const InputPointCloud& point
   tbb::parallel_sort(coord_pt,
                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
 
+  // Invalid (out-of-range) coords all share the key `invalid_coord`, so they form a
+  // single trailing run after the sort. That run is dropped entirely rather than
+  // averaged, since those points don't belong to a real voxel.
+  const size_t num_coords = coord_pt.size();
+  const size_t num_valid_coords =
+      num_coords > 0 && coord_pt.back().first == invalid_coord
+          ? std::lower_bound(coord_pt.begin(),
+                             coord_pt.end(),
+                             std::make_pair(invalid_coord, size_t(0)),
+                             [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; }) -
+                coord_pt.begin()
+          : num_coords;
+
+  const std::vector<size_t> run_starts =
+      FindRunStarts(num_valid_coords, [&](size_t i) { return coord_pt[i].first; });
+  const size_t num_voxels = run_starts.size();
+
   auto downsampled = std::make_shared<OutputPointCloud>();
-  traits::resize(*downsampled, traits::size(points));
+  traits::resize(*downsampled, num_voxels);
 
-  const int block_size            = 2048;
-  std::atomic_uint64_t num_points = 0;
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, traits::size(points), block_size),
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, num_voxels),
                     [&](const tbb::blocked_range<size_t>& range) {
-                      std::vector<Eigen::Vector4d> sub_points;
-                      sub_points.reserve(block_size);
+                      for (size_t voxel = range.begin(); voxel != range.end(); voxel++) {
+                        const size_t begin = run_starts[voxel];
+                        const size_t end =
+                            (voxel + 1 < num_voxels) ? run_starts[voxel + 1] : num_valid_coords;
 
-                      Eigen::Vector4d sum_pt =
-                          traits::point(points, coord_pt[range.begin()].second);
-                      for (size_t i = range.begin() + 1; i != range.end(); i++) {
-                        if (coord_pt[i].first == invalid_coord) {
-                          continue;
+                        Eigen::Vector4d sum_pt = traits::point(points, coord_pt[begin].second);
+                        for (size_t i = begin + 1; i != end; i++) {
+                          sum_pt += traits::point(points, coord_pt[i].second);
                         }
-
-                        if (coord_pt[i - 1].first != coord_pt[i].first) {
-                          sub_points.emplace_back(sum_pt / sum_pt.w());
-                          sum_pt.setZero();
-                        }
-                        sum_pt += traits::point(points, coord_pt[i].second);
-                      }
-                      sub_points.emplace_back(sum_pt / sum_pt.w());
-
-                      const size_t point_index_begin = num_points.fetch_add(sub_points.size());
-                      for (size_t i = 0; i < sub_points.size(); i++) {
-                        traits::set_point(*downsampled, point_index_begin + i, sub_points[i]);
+                        traits::set_point(*downsampled, voxel, sum_pt / sum_pt.w());
                       }
                     });
-
-  traits::resize(*downsampled, num_points);
 
   return downsampled;
 }
@@ -135,40 +168,40 @@ inline std::vector<Eigen::Vector3f> VoxelgridSampling(const std::vector<Eigen::V
   tbb::parallel_sort(coord_pt,
                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
 
+  // Invalid (out-of-range) coords all share the key `invalid_coord`, so they form a
+  // single trailing run after the sort. That run is dropped entirely rather than
+  // averaged, since those points don't belong to a real voxel.
+  const size_t num_coords = coord_pt.size();
+  const size_t num_valid_coords =
+      num_coords > 0 && coord_pt.back().first == invalid_coord
+          ? std::lower_bound(coord_pt.begin(),
+                             coord_pt.end(),
+                             std::make_pair(invalid_coord, size_t(0)),
+                             [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; }) -
+                coord_pt.begin()
+          : num_coords;
+
+  const std::vector<size_t> run_starts =
+      FindRunStarts(num_valid_coords, [&](size_t i) { return coord_pt[i].first; });
+  const size_t num_voxels = run_starts.size();
+
   std::vector<Eigen::Vector3f> downsampled;
-  downsampled.resize(num_raw_points);
+  downsampled.resize(num_voxels);
 
-  const int block_size            = 2048;
-  std::atomic_uint64_t num_points = 0;
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, num_raw_points, block_size),
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, num_voxels),
                     [&](const tbb::blocked_range<size_t>& range) {
-                      std::vector<Eigen::Vector3f> sub_points;
-                      sub_points.reserve(block_size);
+                      for (size_t voxel = range.begin(); voxel != range.end(); voxel++) {
+                        const size_t begin = run_starts[voxel];
+                        const size_t end =
+                            (voxel + 1 < num_voxels) ? run_starts[voxel + 1] : num_valid_coords;
 
-                      Eigen::Vector3f sum_pt = points[coord_pt[range.begin()].second];
-                      float count            = 1.0;
-                      for (size_t i = range.begin() + 1; i != range.end(); i++) {
-                        if (coord_pt[i].first == invalid_coord) {
-                          continue;
+                        Eigen::Vector3d sum_pt = points[coord_pt[begin].second].cast<double>();
+                        for (size_t i = begin + 1; i != end; i++) {
+                          sum_pt += points[coord_pt[i].second].cast<double>();
                         }
-
-                        if (coord_pt[i - 1].first != coord_pt[i].first) {
-                          sub_points.emplace_back(sum_pt / count);
-                          sum_pt.setZero();
-                          count = 0.0;
-                        }
-                        sum_pt += points[coord_pt[i].second];
-                        count += 1.0;
-                      }
-                      sub_points.emplace_back(sum_pt / count);
-
-                      const size_t point_index_begin = num_points.fetch_add(sub_points.size());
-                      for (size_t i = 0; i < sub_points.size(); i++) {
-                        downsampled[point_index_begin + i] = sub_points[i];
+                        downsampled[voxel] = (sum_pt / static_cast<double>(end - begin)).cast<float>();
                       }
                     });
-
-  downsampled.resize(num_points);
 
   return downsampled;
 }

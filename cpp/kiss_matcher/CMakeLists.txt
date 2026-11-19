@@ -65,7 +65,9 @@ if (OPENMP_FOUND) #The best way to set proper compiler settings for using OpenMP
 else (OPENMP_FOUND)
     message("ERROR: OpenMP could not be found.")
 endif (OPENMP_FOUND)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall ${CMAKE_CXX_FLAGS}")
+if(NOT MSVC)
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall ${CMAKE_CXX_FLAGS}")
+endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/core)
 
